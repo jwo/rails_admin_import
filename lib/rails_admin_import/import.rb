@@ -1,4 +1,6 @@
 require 'open-uri'
+require 'pry'
+require 'roo'
   
 module RailsAdminImport
   module Import
@@ -52,6 +54,16 @@ module RailsAdminImport
 
         attrs - RailsAdminImport.config(self).excluded_fields 
       end 
+
+
+      def open_spreadsheet(file)
+        case File.extname(file.original_filename)
+        when ".csv" then Roo::CSV.new(file.path)
+        when ".xls" then Roo::Excel.new(file.path, file_warning: :ignore)
+        when ".xlsx" then Roo::Excelx.new(file.path, file_warning: :ignore)
+        else raise "Unknown file type: #{file.original_filename}"
+        end
+      end
   
       def run_import(params)
         begin
@@ -59,37 +71,52 @@ module RailsAdminImport
             return results = { :success => [], :error => ["You must select a file."] }
           end
 
+
+          #setup logger
+
           if RailsAdminImport.config.logging
             FileUtils.copy(params[:file].tempfile, "#{Rails.root}/log/import/#{Time.now.strftime("%Y-%m-%d-%H-%M-%S")}-import.csv")
             logger = Logger.new("#{Rails.root}/log/import/import.log")
+          else
+            logger = Logger.new("/dev/null")
           end
 
           text = File.read(params[:file].tempfile)
-          clean = text.force_encoding('BINARY').encode('UTF-8', :undef => :replace, :replace => '').gsub(/\n$/, '')
-          file_check = CSV.new(clean)
+          #clean = text.force_encoding('BINARY').encode('UTF-8', :undef => :replace, :replace => '').gsub(/\n$/, '')
+          #File.open(params[:file].tempfile, 'wb') {|f| f.write(clean) }
+          spreadsheet = open_spreadsheet(params[:file])
 
-          if file_check.readlines.size > RailsAdminImport.config.line_item_limit
+          if spreadsheet.count > RailsAdminImport.config.line_item_limit
             return results = { :success => [], :error => ["Please limit upload file to #{RailsAdminImport.config.line_item_limit} line items."] }
           end
+
+
+          # map of params
   
           map = {}
-   
-          file = CSV.new(clean)
-          file.readline.each_with_index do |key, i|
-            if self.many_fields.include?(key.to_sym)
-              map[key.to_sym] ||= []
-              map[key.to_sym] << i
+
+          # replace here with roo gem
+          header = spreadsheet.row(1).select(&:present?).map{|k| k.parameterize.gsub("-","_").to_sym}
+          header.each_with_index do |symbol, i|
+            if self.many_fields.include?(symbol)
+              map[symbol] ||= []
+              map[symbol] << i
             else
-              map[key.to_sym] = i 
+              map[symbol] = i 
             end
           end
+
+          # should we update
    
-          update = params.has_key?(:update_if_exists) && params[:update_if_exists] ? params[:update_lookup].to_sym : nil
+          update = :work_email
   
-          if update && !map.has_key?(params[:update_lookup].to_sym)
+          if update && !map.has_key?(:work_email)
             return results = { :success => [], :error => ["Your file must contain a column for the 'Update lookup field' you selected."] }
           end 
     
+
+          # params
+          #
           results = { :success => [], :error => [] }
     
           associated_map = {}
@@ -102,11 +129,14 @@ module RailsAdminImport
    
           label_method = RailsAdminImport.config(self).label
   
-          file.each do |row|
+          (2..spreadsheet.last_row).each do |i|
+            row = spreadsheet.row(i)
             object = self.import_initialize(row, map, update)
             object.import_belongs_to_data(associated_map, row, map)
             object.import_many_data(associated_map, row, map)
             object.before_import_save(row, map)
+
+            object.set_layer_tokens(params[:apply_layer])
   
             object.import_files(row, map)
   
@@ -131,6 +161,7 @@ module RailsAdminImport
           return results = { :success => [], :error => ["Could not upload. Unexpected error: #{e.to_s}"] }
         end
       end
+
   
       def import_initialize(row, map, update)
         new_attrs = {}
