@@ -107,9 +107,9 @@ module RailsAdminImport
 
           # should we update
    
-          update = :work_email
+          update = :preferred_email
   
-          if update && !map.has_key?(:work_email)
+          if update && !map.has_key?(:preferred_email)
             return results = { :success => [], :error => ["Your file must contain a column for the 'Update lookup field' you selected."] }
           end 
     
